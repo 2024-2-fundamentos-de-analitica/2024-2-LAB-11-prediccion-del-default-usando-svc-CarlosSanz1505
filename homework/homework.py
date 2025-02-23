@@ -95,3 +95,146 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+# Para evitar advertencias de casting de datos en pandas
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+# Librerías utilizadas
+import os
+import json
+import gzip
+import pandas as pd
+import pickle
+from sklearn import pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest
+from sklearn.svm import SVC
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import precision_score, balanced_accuracy_score, recall_score, f1_score, confusion_matrix
+
+
+#  Carga de datos
+train_data = pd.read_csv('./files/input/train_data.csv.zip')
+test_data = pd.read_csv('./files/input/test_data.csv.zip')
+
+
+# Paso 1 - Limpieza de datos
+train_data.rename(columns={'default payment next month': 'default'}, inplace=True)
+test_data.rename(columns={'default payment next month': 'default'}, inplace=True)
+
+train_data.drop('ID', axis=1, inplace=True)
+test_data.drop('ID', axis=1, inplace=True)
+
+train_data.dropna(inplace=True)
+test_data.dropna(inplace=True)
+
+train_data.loc[train_data['EDUCATION'] > 4, 'EDUCATION'] = 5
+test_data.loc[test_data['EDUCATION'] > 4, 'EDUCATION'] = 5
+
+
+# Paso 2 - Partición de entrenamiento y validación
+X_train = train_data.drop('default', axis=1)
+y_train = train_data['default']
+X_test = test_data.drop('default', axis=1)
+y_test = test_data['default']
+
+
+# Paso 3 - Creación de pipeline
+encoder = OneHotEncoder(handle_unknown='ignore')
+reductor = PCA()
+selector = SelectKBest()
+scaler = StandardScaler()
+classifier = SVC()
+pipeline = Pipeline(
+    steps=[
+        ('encoder', encoder),
+        ('reductor', reductor),
+        ('scaler', scaler),
+        ('selector', selector),
+        ('classifier', classifier)
+    ]
+)
+
+
+# Paso 4 - Optimización de hiperparámetros
+param_grid = {
+    'selector__k': [2, 3, 4],
+    # 'reductor__n_components': [2, 3, 4],
+    'classifier__C': [0.1, 1, 10],
+}
+grid_search = GridSearchCV(
+    pipeline, param_grid, cv=2, scoring='balanced_accuracy'
+)
+grid_search.fit(X_train, y_train)
+
+
+# Paso 5 - Guardar modelo
+if not os.path.exists('./files/models'):
+    os.makedirs('./files/models')
+
+with gzip.open('./files/models/model.pkl.gz', 'wb') as file:
+    file.write(pickle.dumps(grid_search))
+
+
+# Paso 6 - Cálculo de métricas del modelo
+y_train_pred = grid_search.predict(X_train)
+y_test_pred = grid_search.predict(X_test)
+
+train_precision = precision_score(y_train, y_train_pred)
+test_precision = precision_score(y_test, y_test_pred)
+train_balanced_accuracy = balanced_accuracy_score(y_train, y_train_pred)
+test_balanced_accuracy = balanced_accuracy_score(y_test, y_test_pred)
+train_recall = recall_score(y_train, y_train_pred)
+test_recall = recall_score(y_test, y_test_pred)
+train_f1 = f1_score(y_train, y_train_pred)
+test_f1 = f1_score(y_test, y_test_pred)
+
+
+# Paso 7 - Cálculo de matriz de confusión del modelo
+train_tn, train_fp, train_fn, train_tp = confusion_matrix(y_train, y_train_pred).ravel()
+test_tn, test_fp, test_fn, test_tp = confusion_matrix(y_test, y_test_pred).ravel()
+
+
+# Guardar métricas y matrices
+if not os.path.exists('./files/output'):
+    os.makedirs('./files/output')
+
+with open('./files/output/metrics.json', 'w') as file:
+    train_dict = {
+        'type': 'metrics',
+        'dataset': 'train',
+        'precision': train_precision,
+        'balanced_accuracy': train_balanced_accuracy,
+        'recall': train_recall,
+        'f1_score': train_f1
+    }
+    test_dict = {
+        'type': 'metrics',
+        'dataset': 'test',
+        'precision': test_precision,
+        'balanced_accuracy': test_balanced_accuracy,
+        'recall': test_recall,
+        'f1_score': test_f1
+    }
+    cm_train_dict = {
+        'type': 'cm_matrix',
+        'dataset': 'train',
+        'true_0': {'predicted_0': int(train_tn), 'predicted_1': int(train_fp)},
+        'true_1': {'predicted_0': int(train_fn), 'predicted_1': int(train_tp)}
+    }
+    cm_test_dict = {
+        'type': 'cm_matrix',
+        'dataset': 'test',
+        'true_0': {'predicted_0': int(test_tn), 'predicted_1': int(test_fp)},
+        'true_1': {'predicted_0': int(test_fn), 'predicted_1': int(test_tp)}
+    }
+    dictstrings = [
+        json.dumps(train_dict),
+        json.dumps(test_dict),
+        json.dumps(cm_train_dict),
+        json.dumps(cm_test_dict)
+    ]
+    file.write('\n'.join(dictstrings))
